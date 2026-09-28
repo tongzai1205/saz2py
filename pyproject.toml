@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saz2py"
+version = "1.0.0"
+description = "Turn Fiddler .saz captures into replayable Python scripts, pytest suites and Postman collections — zero dependency, single file, even recovers truncated captures. 把 Fiddler 抓包一键变成可回放脚本/pytest用例/Postman集合."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "tongzai1205" }]
+keywords = [
+    "fiddler", "saz", "packet-capture", "replay", "pytest", "postman",
+    "api-testing", "testing", "test-automation", "har",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/tongzai1205/saz2py"
+Issues = "https://github.com/tongzai1205/saz2py/issues"
+
+[project.scripts]
+saz2py = "saz2py:main"
+
+[project.optional-dependencies]
+replay = ["requests"]
+test = ["requests", "pytest"]
+
+[tool.setuptools]
+py-modules = ["saz2py"]

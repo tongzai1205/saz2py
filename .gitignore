@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+
+# 本地调试产物
+_*.txt
+_*.py
+_*.json
+_*.log
+chk*.txt
+
+# 真实抓包与由真实抓包生成的产物（含内部系统数据，禁止入库）
+*.saz
+!examples/demo.saz
+test_bhz.py
+test_bsbp.py
+*_replay.py
+/replay.py
+/test_mock.py
+/test_demo.py
+bhz_*.json
+bsbp_*.json
+sessions.json
+api.postman_collection.json
