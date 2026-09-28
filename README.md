@@ -4,7 +4,10 @@
 
 Turn Fiddler `.saz` captures into replayable Python scripts, pytest suites and Postman collections — one command, zero config, zero dependency.
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Tests](https://img.shields.io/badge/replay-129%20real%20APIs%20%E2%9C%93-brightgreen)
+![CI](https://github.com/tongzai1205/saz2py/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Deps](https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen)
 
 ## 为什么需要它
 
@@ -24,17 +27,17 @@ saz2py 会从抓包响应里自动识别成功包装结构（`code==0` / `succes
 
 ## 特性
 
-| 特性 | 说明 |
-|---|---|
-| 🪶 **零依赖单文件** | 工具本体纯标准库（3.8+），单文件拷走即用；也可 `pip install saz2py` |
-| 🔍 **自动去重 + 噪音过滤** | 同接口只留最新参数；自动剔除 OPTIONS 预检、SPA 页面路由、Vite/Webpack 静态资源 |
-| 🔗 **链式变量** | 自动识别「接口 A 响应里的 id → 接口 B 请求引用」：pytest 里生成 `ctx` 提取与传递（提取失败自动兜底抓包原值，链条永不断），Postman 里生成集合变量 `{{id}}` + 自动 set 的测试脚本 |
-| ✅ **业务断言** | 按抓包响应自动推断成功包装（`code`/`status`/`success`/`data`），pytest 与 Postman 同步生成 |
-| 🧪 **pytest 模式** | `--pytest` 生成标准用例：`requests.Session` fixture（连接复用+Cookie 保持）、按抓包顺序执行、可直接进 CI |
-| 📦 **Postman 迁移** | Collection v2.1，Import 即用，链式变量与断言一并生成 |
-| 🚑 **损坏恢复** | .saz 导出中断/复制不全导致 zip 损坏时自动逐条目恢复——53MB 截断包实测救回 15402 个会话 |
-| 🎯 **URL 过滤** | `-f 关键字` 只导出关心的接口 |
-| 🛡 **坏数据容错** | 跳过损坏会话，兼容 Fiddler 的 BOM 存储坑，兼容经典版与 Fiddler Everywhere 两种内部命名 |
+| 特性                 | 说明                                                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| 🪶 **零依赖单文件**      | 工具本体纯标准库（3.8+），单文件拷走即用；也可 `pip install saz2py`                                                                    |
+| 🔍 **自动去重 + 噪音过滤** | 同接口只留最新参数；自动剔除 OPTIONS 预检、SPA 页面路由、Vite/Webpack 静态资源                                                              |
+| 🔗 **链式变量**        | 自动识别「接口 A 响应里的 id → 接口 B 请求引用」：pytest 里生成 `ctx` 提取与传递（提取失败自动兜底抓包原值，链条永不断），Postman 里生成集合变量 `{{id}}` + 自动 set 的测试脚本 |
+| ✅ **业务断言**         | 按抓包响应自动推断成功包装（`code`/`status`/`success`/`data`），pytest 与 Postman 同步生成                                             |
+| 🧪 **pytest 模式**   | `--pytest` 生成标准用例：`requests.Session` fixture（连接复用+Cookie 保持）、按抓包顺序执行、可直接进 CI                                      |
+| 📦 **Postman 迁移**  | Collection v2.1，Import 即用，链式变量与断言一并生成                                                                             |
+| 🚑 **损坏恢复**        | .saz 导出中断/复制不全导致 zip 损坏时自动逐条目恢复——53MB 截断包实测救回 15402 个会话                                                           |
+| 🎯 **URL 过滤**      | `-f 关键字` 只导出关心的接口                                                                                                 |
+| 🛡 **坏数据容错**       | 跳过损坏会话，兼容 Fiddler 的 BOM 存储坑，兼容经典版与 Fiddler Everywhere 两种内部命名                                                      |
 
 ## 快速开始
 
@@ -104,22 +107,31 @@ def test_020_post_business_mixingstationdict_update(api):
 
 ## Roadmap
 
-- [ ] HAR / Charles 抓包格式支持
+- [x] HAR / Charles 抓包格式支持
 - [ ] 断言规则自定义（配置文件）
 - [ ] HTML 测试报告
 - [ ] `--merge` 多个抓包合并去重
 
 ## 真实项目战绩
 
-| 抓包 | 规模 | 结果 |
-|---|---|---|
+| 抓包                     | 规模                  | 结果                                                           |
+| ---------------------- | ------------------- | ------------------------------------------------------------ |
 | 某混凝土搅拌站管理系统（53MB，截断损坏） | 15402 会话 → 112 业务接口 | 恢复模式救回全部数据，pytest 全量生成；登录态失效后**状态码断言仍全绿，业务断言揪出 93 个**业务层 401 |
-| 某标识标牌管理系统（动态 token） | 52 会话 → 17 业务接口 | 状态码 17/17 全绿，业务断言 17/17 红——token 过期只有在业务层才看得见 |
-| 合成 demo 抓包 | 6 会话 → 4 接口 | `examples/demo.saz`，克隆即可复现 |
+| 某标识标牌管理系统（动态 token）    | 52 会话 → 17 业务接口     | 状态码 17/17 全绿，业务断言 17/17 红——token 过期只有在业务层才看得见                |
+| 合成 demo 抓包             | 6 会话 → 4 接口         | `examples/demo.saz`，克隆即可复现                                   |
 
 ## Contributing
 
 Issue / PR 都欢迎。发现你真实抓包里解析失败的场景，请附上报错信息（工具会自动打印内部条目结构辅助定位）。
+
+本地开发：
+
+```bash
+pip install -e ".[test]"
+python -m pytest tests -q     # 18 个用例，覆盖解析/生成/链式变量/断言/损坏恢复/端到端
+```
+
+CI 在 Python 3.9 ~ 3.13 全矩阵运行，并且会强制校验「本体不允许引入任何第三方依赖」。
 
 ## License
 

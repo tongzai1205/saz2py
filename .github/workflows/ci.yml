@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test deps
+        run: python -m pip install --upgrade pip "pytest>=7,<9" requests
+
+      - name: Run test suite
+        run: python -m pytest tests -q
+
+      - name: CLI smoke test (demo capture)
+        run: |
+          python saz2py.py examples/demo.saz
+          python saz2py.py examples/demo.saz --pytest -o /tmp/test_demo.py --postman /tmp/demo.postman.json
+          python -m pytest /tmp/test_demo.py --collect-only -q
+
+      - name: Verify single-file zero-dependency claim
+        run: |
+          python - <<'PY'
+          import ast, sys
+          src = open("saz2py.py", encoding="utf-8").read()
+          mods = set()
+          for node in ast.walk(ast.parse(src)):
+              if isinstance(node, ast.Import):
+                  mods |= {a.name.split(".")[0] for a in node.names}
+              elif isinstance(node, ast.ImportFrom) and node.module:
+                  mods.add(node.module.split(".")[0])
+          stdlib = set(sys.stdlib_module_names)
+          extra = sorted(m for m in mods if m not in stdlib and m != "__future__")
+          print("non-stdlib imports:", extra)
+          assert not extra, "saz2py.py 本体不允许引入第三方依赖: %s" % extra
+          PY
