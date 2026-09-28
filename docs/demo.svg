@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="378" viewBox="0 0 820 378" font-family="'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace">
+  <rect width="820" height="378" rx="10" fill="#1b1f27"/>
+  <rect width="820" height="34" rx="10" fill="#2a2f3a"/>
+  <rect y="24" width="820" height="10" fill="#2a2f3a"/>
+  <circle cx="20" cy="17" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="17" r="6" fill="#febc2e"/>
+  <circle cx="60" cy="17" r="6" fill="#28c840"/>
+  <text x="410" y="21" fill="#8b93a7" font-size="12" text-anchor="middle">saz2py — Fiddler .saz → pytest 用例</text>
+
+  <g font-size="13.5" fill="#d6dae3">
+    <text x="20" y="62"><tspan fill="#7ee787">$</tspan> saz2py capture.saz --pytest -o test_api.py</text>
+
+    <text x="20" y="92" fill="#c9d1d9">共 <tspan fill="#79c0ff">4</tspan> 个去重接口 (原始 6 个会话):</text>
+
+    <text x="20" y="124" fill="#8b949e">  #1   <tspan fill="#7ee787">GET</tspan>    /api/sceneInfo/list?type=2          <tspan fill="#7ee787">200</tspan></text>
+    <text x="20" y="146" fill="#8b949e">  #2   <tspan fill="#d2a8ff">POST</tspan>   /api/signage/version/save           <tspan fill="#7ee787">200</tspan></text>
+    <text x="20" y="168" fill="#8b949e">  #3   <tspan fill="#d2a8ff">POST</tspan>   /api/upload/img                     <tspan fill="#f0883e">500</tspan></text>
+    <text x="20" y="190" fill="#8b949e">  #4   <tspan fill="#d2a8ff">POST</tspan>   /api/login                          <tspan fill="#7ee787">200</tspan></text>
+
+    <text x="20" y="222" fill="#7ee787">✓ 将为 3 个接口自动生成业务断言（code/success/data 结构）</text>
+    <text x="20" y="244" fill="#7ee787">✓ pytest 测试文件已生成: test_api.py  (运行: pytest test_api.py -v)</text>
+  </g>
+
+  <rect x="14" y="266" width="792" height="96" rx="6" fill="#161a21" stroke="#30363d"/>
+  <g font-size="12.5">
+    <text x="28" y="290" fill="#8b949e"># 生成结果：可直接进 CI 的用例，链式 id 自动传递、业务断言自动带上</text>
+    <text x="28" y="312" fill="#ffa657">def</text>
+    <text x="60" y="312" fill="#79c0ff">test_005_get_business_order_detail</text>
+    <text x="330" y="312" fill="#c9d1d9">(api):</text>
+    <text x="28" y="332" fill="#d6dae3">    resp = api.request(</text>
+    <text x="228" y="332" fill="#a5d6ff">"GET"</text>
+    <text x="272" y="332" fill="#d6dae3">, BASE_URL + </text>
+    <text x="384" y="332" fill="#a5d6ff">'/api/order/' + ctx.get(</text>
+    <text x="548" y="332" fill="#a5d6ff">'order_id'</text>
+    <text x="632" y="332" fill="#d6dae3">, </text>
+    <text x="644" y="332" fill="#a5d6ff">'2092...'</text>
+    <text x="716" y="332" fill="#d6dae3">))</text>
+    <text x="28" y="352" fill="#d6dae3">    </text>
+    <text x="58" y="352" fill="#ff7b72">assert</text>
+    <text x="106" y="352" fill="#d6dae3">resp.status_code == </text>
+    <text x="248" y="352" fill="#79c0ff">200</text>
+    <text x="272" y="352" fill="#8b949e">;</text>
+    <text x="288" y="352" fill="#ff7b72">assert</text>
+    <text x="336" y="352" fill="#d6dae3">resp.json().get(</text>
+    <text x="450" y="352" fill="#a5d6ff">'code'</text>
+    <text x="498" y="352" fill="#d6dae3">) == </text>
+    <text x="540" y="352" fill="#79c0ff">0</text>
+  </g>
+</svg>

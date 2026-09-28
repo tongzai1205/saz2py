@@ -9,6 +9,8 @@ Turn Fiddler `.saz` captures into replayable Python scripts, pytest suites and P
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Deps](https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen)
 
+![saz2py demo](docs/demo.svg)
+
 ## 为什么需要它
 
 抓包分析完接口后，把每个请求手工搬进 Postman、再手写成 requests 脚本，是最枯燥的体力活。
