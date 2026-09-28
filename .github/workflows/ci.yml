@@ -34,6 +34,17 @@ jobs:
           python saz2py.py examples/demo.saz --pytest -o /tmp/test_demo.py --postman /tmp/demo.postman.json
           python -m pytest /tmp/test_demo.py --collect-only -q
 
+  zero-dep:
+    name: zero-dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Verify single-file zero-dependency claim
         run: |
           python - <<'PY'
