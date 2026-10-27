@@ -142,6 +142,68 @@ def test_chain_rendered_in_outputs():
     assert any(it.get("event") for it in pm["item"])  # 生产者挂了提取脚本
 
 
+def test_build_chains_query_and_body():
+    """v1.2: query 参数与 JSON 请求体里的 id 引用也要连成链。"""
+    rid = "2092805340221083649"
+    producer = _sess(1, method="POST", path="/api/tree/save",
+                     resp={"code": 0, "data": {"id": rid}})
+    q_consumer = _sess(2, path="/api/tree/detail", query="id=" + rid)
+    b_consumer = _sess(3, method="POST", path="/api/other/save",
+                       req_ctype="application/json",
+                       body=json.dumps({"pid": rid}).encode())
+    var_by_value, setmap = saz2py.build_chains([producer, q_consumer, b_consumer])
+    assert var_by_value == {rid: "tree_id"}
+    assert setmap[1] == [(("data", "id"), "tree_id")]
+    # 渲染: query 与 body 里都要变成 ctx 引用
+    py = saz2py.gen_pytest([producer, q_consumer, b_consumer],
+                           "t.saz", var_by_value, setmap)
+    assert "?id=' + ctx.get('tree_id'" in py
+    assert "'pid': ctx.get('tree_id'" in py
+    compile(py, "gen.py", "exec")
+
+
+def test_echo_session_not_producer():
+    """查询回显型接口(GET ?id=X 且响应含 X)不能当生产者。"""
+    rid = "2092805340221083649"
+    echo = _sess(1, path="/api/tree/get", query="id=" + rid,
+                 resp={"code": 0, "data": {"id": rid}})
+    consumer = _sess(2, method="POST", path="/api/other/save",
+                     req_ctype="application/json",
+                     body=json.dumps({"pid": rid}).encode())
+    var_by_value, _ = saz2py.build_chains([echo, consumer])
+    assert var_by_value == {}
+
+
+def test_rescue_producers_keeps_creator():
+    """链路感知去重: 同端点多次调用时，创建者会话（响应产出后续所需 id）要保留。"""
+    rid = "2092805340221083649"
+    creator = _sess(1, method="POST", path="/api/tree/save",
+                    resp={"code": 0, "data": {"id": rid}})
+    poll = _sess(2, path="/api/tree/get", query="id=" + rid,
+                 resp={"code": 0, "data": {"id": rid}})
+    other = _sess(3, method="POST", path="/api/tree/save",
+                  req_ctype="application/json",
+                  body=json.dumps({"name": "b", "pid": rid}).encode(),
+                  resp={"code": 0, "data": "ok"})
+    kept, rescued = saz2py._rescue_producers([creator, poll, other], [poll, other])
+    assert rescued == 1
+    assert [s["id"] for s in kept] == [1, 2, 3]  # creator 被恢复
+
+
+def test_rescue_prefers_write_producer():
+    """有写接口生产者时，不恢复 GET 回显会话。"""
+    rid = "2092805340221083649"
+    creator = _sess(1, method="POST", path="/api/tree/save",
+                    resp={"code": 0, "data": {"id": rid}})
+    get_echo = _sess(2, path="/api/tree/get", query="name=x",
+                     resp={"code": 0, "data": {"list": [rid]}})
+    consumer = _sess(3, path="/api/tree/detail", query="id=" + rid)
+    kept, rescued = saz2py._rescue_producers(
+        [creator, get_echo, consumer], [get_echo, consumer])
+    assert rescued == 1
+    assert [s["id"] for s in kept] == [1, 2, 3]  # 恢复的是 #1 而非 GET 回显
+
+
 # ------------------------------------------------------------------ 回放唯一化
 
 def _post_save_sess():

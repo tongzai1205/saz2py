@@ -24,11 +24,11 @@ import sys
 import zipfile
 import zlib
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 from collections import Counter
 from http.client import parse_headers
 from pprint import pformat
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 # 兼容两种内部命名: 经典 Fiddler "raw/_c.txt001" / Fiddler Everywhere "raw/001_c.txt"
 REQ_RE = re.compile(r"^raw/(?:_c\.txt(\d+)|(\d+)_c\.txt)$")
@@ -212,7 +212,103 @@ def parse_saz(path, url_filter=None, keep_noise=False):
     dedup = {}
     for s in sessions:
         dedup[(s["method"], s["path"])] = s
-    return total, noise, sorted(dedup.values(), key=lambda s: s["id"])
+    kept, rescued = _rescue_producers(sessions, list(dedup.values()))
+    if rescued:
+        print("✓ 链路感知去重: 恢复 %d 个「响应产出后续所需 id」的会话，保证回放链完整"
+              % rescued)
+    return total, noise, sorted(kept, key=lambda s: s["id"])
+
+
+def _best_producer(sessions, v, cid, resp_json, resp_text):
+    """找 id v 的最佳生产者会话（返回 (会话, json路径) 或 (None, None)）:
+    - 必须在消费者 cid 之前、响应包含 v 且可定位 JSON 路径、请求自身未引用 v
+      (排除 getFirstRoot/getAllInfoByAnyId 等查询回显型接口)；
+    - 优先写接口(POST/PUT/PATCH，真正的数据创建者)，查询类仅作兜底。"""
+    last_write = last_any = None
+    for t in sessions:
+        if t["id"] >= cid:
+            break
+        if v in _used_ids(t) or v not in resp_text.get(t["id"], ""):
+            continue
+        j = resp_json.get(t["id"])
+        if j is None:
+            continue
+        p = _find_json_path(j, v)
+        if p is None:
+            continue
+        if t["method"] in ("POST", "PUT", "PATCH"):
+            last_write = (t, p)
+        else:
+            last_any = (t, p)
+    return last_write or last_any or (None, None)
+
+
+def _rescue_producers(all_sessions, kept):
+    """链路感知去重: 普通 (method,path) 去重只留最后一次调用，会丢掉
+    「创建数据」的源头会话（如第 1 次 tree/save 创建根节点，后续都在引用它）。
+    这里把「响应里可定位地产出、且被保留会话真正需要」的被丢弃会话级联恢复，
+    保证「创建 -> 引用 -> 确认/删除」的完整业务链在回放里仍然成立。
+    判定标准与 build_chains 一致: 响应 JSON 里能定位到该 id（拼接串里的不算），
+    且请求自身没引用它（排除查询回显型接口）；写接口(POST/PUT/PATCH)优先。"""
+    kept_ids = {s["id"] for s in kept}
+    used_cache = {s["id"]: _used_ids(s) for s in all_sessions}
+    resp_text = {s["id"]: s["resp_body"].decode("utf-8", "replace")
+                 for s in all_sessions}
+    resp_json = {}
+    for s in all_sessions:
+        if "json" in s["resp_ctype"]:
+            try:
+                resp_json[s["id"]] = json.loads(resp_text[s["id"]])
+            except Exception:
+                pass
+
+    def scan(v, cid, only_kept, write_only=False):
+        """找 cid 之前能「可定位地」生产 v 的会话，写接口优先。"""
+        last_write = last_any = None
+        for t in all_sessions:
+            if t["id"] >= cid:
+                break
+            if only_kept and t["id"] not in kept_ids:
+                continue
+            if v in used_cache[t["id"]] or v not in resp_text.get(t["id"], ""):
+                continue  # 请求自身引用该 id = 回显，不是生产者
+            j = resp_json.get(t["id"])
+            if j is None:
+                continue
+            p = _find_json_path(j, v)
+            if p is None:
+                continue
+            if t["method"] in ("POST", "PUT", "PATCH"):
+                last_write = (t, p)
+            elif not write_only:
+                last_any = (t, p)
+        return last_write or last_any
+
+    rescued = 0
+    changed = True
+    while changed:
+        changed = False
+        kept = [s for s in all_sessions if s["id"] in kept_ids]  # 随恢复更新
+        need = {}  # id -> 最早消费它的保留会话 id
+        for s in kept:
+            for v in used_cache[s["id"]]:
+                if v not in need or s["id"] < need[v]:
+                    need[v] = s["id"]
+        for v, cid in need.items():
+            # 优先保证「写接口创建者」在场；GET 查询类只作最后兜底
+            if scan(v, cid, True, write_only=True):
+                continue  # 已有保留的写接口生产者
+            t, _p = scan(v, cid, False, write_only=True)
+            if t is None:  # 没有写接口生产者时才看查询类
+                if scan(v, cid, True, write_only=False):
+                    continue
+                t, _p = scan(v, cid, False, write_only=False)
+            if t is not None:
+                kept_ids.add(t["id"])
+                rescued += 1
+                changed = True
+    kept = [s for s in all_sessions if s["id"] in kept_ids]
+    return kept, rescued
 
 
 def body_kind(sess):
@@ -335,12 +431,25 @@ def _used_ids(s):
     return used
 
 
+def _resource_name(path):
+    """从生产者路径取资源名（跳过 save/get/confirm 等动词段），用于变量命名。"""
+    verbs = {"save", "update", "add", "create", "edit", "confirm", "delete",
+             "del", "remove", "get", "query", "list", "page", "detail", "info",
+             "batch", "submit", "audit", "data", "do"}
+    segs = [x for x in path.split("/") if x and re.search(r"[A-Za-z]", x)]
+    if not segs:
+        return "api"
+    res = next((x for x in reversed(segs) if x.lower() not in verbs), segs[-1])
+    return re.sub(r"[^a-z0-9]+", "_", res.lower()).strip("_") or "api"
+
+
 def build_chains(sessions):
     """把「前序接口响应中出现的长数字 id」与「后续请求用到的同一 id」连成变量。
     返回 (var_by_value, setmap):
       var_by_value: id字面值 -> 变量名 (如 '2092516021364604930' -> 'mixingstationdict_id')
       setmap: 生产者会话id -> [(json路径, 变量名)] —— 需要在生成脚本里加提取代码
-    只处理路径型 REST id（/resource/<id>），且要求生产者响应是可定位路径的 JSON。"""
+    v1.2: 支持三种引用位置 —— 路径型 (/resource/<id>)、query 参数 (?id=...)、
+    JSON 请求体字段 (pid / ljOtherCalculationLeafId 等)。"""
     var_by_value, setmap = {}, {}
     resp_text = {s["id"]: s["resp_body"].decode("utf-8", "replace")
                  for s in sessions}
@@ -352,31 +461,44 @@ def build_chains(sessions):
             except Exception:
                 pass
     for s in sessions:
+        kind, val = body_kind(s)
+        body_json = val if kind == "json" else None
         for v in sorted(_used_ids(s)):
             if v in var_by_value:
                 continue
+            # 定位 id 在请求中的「键名」(用于变量命名)，三种来源依次尝试
+            key, from_path = None, False
             segs = [x for x in s["path"].split("/") if x]
-            if v not in segs:  # 只参数化路径型 id
+            if v in segs:
+                i = segs.index(v)
+                if i > 0 and re.search(r"[A-Za-z]", segs[i - 1]):
+                    key, from_path = segs[i - 1], True
+            if key is None:
+                for qk, qv in parse_qsl(s["query"]):
+                    if qv == v:
+                        key = qk
+                        break
+            if key is None and body_json is not None:
+                p = _find_json_path(body_json, v)
+                if p:
+                    key = p[-1]
+            if key is None:
                 continue
-            i = segs.index(v)
-            if i == 0 or not re.search(r"[A-Za-z]", segs[i - 1]):
+            # 向前找最佳生产者（优先写接口，排除查询回显）
+            t, p = _best_producer(sessions, v, s["id"], resp_json, resp_text)
+            if t is None:
                 continue
-            name = re.sub(r"[^a-z0-9]+", "_", segs[i - 1].lower()).strip("_") + "_id"
+            if from_path:  # 路径型保持旧命名: 前段_id (如 order_id)
+                name = re.sub(r"[^a-z0-9]+", "_",
+                              str(key).lower()).strip("_") + "_id"
+            else:          # query/body 型: 生产者资源_键名
+                kname = re.sub(r"[^a-z0-9]+", "_",
+                               str(key).lower()).strip("_")
+                name = "%s_%s" % (_resource_name(t["path"]), kname or "id")
             while name in var_by_value.values():  # 变量名去重
                 name += "_2"
-            # 向前找: 更早会话的 JSON 响应里包含该 id 且能定位路径
-            for t in sessions:
-                if t["id"] >= s["id"]:
-                    break
-                j = resp_json.get(t["id"])
-                if j is None or v not in resp_text[t["id"]]:
-                    continue
-                p = _find_json_path(j, v)
-                if p is None:
-                    continue
-                var_by_value[v] = name
-                setmap.setdefault(t["id"], []).append((p, name))
-                break
+            var_by_value[v] = name
+            setmap.setdefault(t["id"], []).append((p, name))
     return var_by_value, setmap
 
 
