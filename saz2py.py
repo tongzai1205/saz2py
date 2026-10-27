@@ -413,18 +413,39 @@ def _ctxify(obj, var_by_value):
 # 回放若仍用抓包原值，服务端会报「数据库中已存在该记录」。自动改成每次生成新值。
 # 短数字 id(如 economicMinisterHrId='222826')多为外键，保留原值以免破坏关联。
 
-def _need_fuzz(key, value, method, fuzz_keys, auto_id):
+def _need_fuzz(key, value, method, fuzz_keys, auto_id, parent, path):
     """判定某个 (键, 值) 是否需要回放时唯一化。"""
     k = str(key).lower()
-    if auto_id and method in ("POST", "PUT", "PATCH") and k == "id" \
-            and isinstance(value, (str, int)):
-        return True  # 资源自身 id: 自动唯一化
+    # 用户显式指定的字段始终唯一化（--fuzz-fields）
     if fuzz_keys and k in fuzz_keys and isinstance(value, (str, int, float)):
-        return True  # 用户 --fuzz-fields 指定的额外唯一键
+        return True
+    if not auto_id:
+        return False
+    # 自动唯一化只针对「资源自身 id」：写入型 + 数值型 id
+    if k != "id" or not isinstance(value, (str, int)) or not str(value).isdigit():
+        return False
+    if method not in ("POST", "PUT", "PATCH"):
+        return False
+    # 单键 {id:...} 报文通常是「对已有记录的操作」(confirm/submit/delete/审核)，
+    # id 指向已存在数据，随机化会「未找到相关节点」——这种绝不自动改
+    if len(parent) == 1:
+        return False
+    # POST 按约定是创建；PUT/PATCH 多为更新，仅当端点含 save/create 等创建语义时才唯一化
+    if method == "POST" or _has_create_hint(path):
+        return True
     return False
 
 
-def _fuzz_payload(val, method, fuzz_keys, auto_id):
+_CREATE_HINTS = ("save", "create", "add", "insert", "new", "register")
+
+
+def _has_create_hint(path):
+    """端点路径是否含新建语义（save/add/create...），用于 PUT/PATCH 的判定。"""
+    p = (path or "").lower()
+    return any(h in p for h in _CREATE_HINTS)
+
+
+def _fuzz_payload(val, method, fuzz_keys, auto_id, path=""):
     """递归把 JSON payload 中需唯一化的字段原地替换成 _Fuzz 占位符。
     返回是否发生了唯一化（用于决定是否向生成文件注入 gen_id/gen_unique 辅助函数）。"""
     used = [False]
@@ -434,7 +455,7 @@ def _fuzz_payload(val, method, fuzz_keys, auto_id):
             for k, v in list(o.items()):  # list() 以便原地改
                 if isinstance(v, (dict, list)):
                     _walk(v)
-                elif _need_fuzz(k, v, method, fuzz_keys, auto_id):
+                elif _need_fuzz(k, v, method, fuzz_keys, auto_id, o, path):
                     kind = "id" if isinstance(v, (str, int)) and str(v).isdigit() \
                         else "str"
                     o[k] = _Fuzz(kind, v if isinstance(v, str) else str(v))
@@ -533,7 +554,7 @@ def gen_script(sessions, saz_name="", var_by_value=None, setmap=None,
         url_arg = url_e if url_e else repr(path_q)
         if kind == "json":
             obj = _ctxify(val, var_by_value)
-            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id):
+            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id, s["path"]):
                 file_fuzzed = True
             lines.append("    payload = %s" % pformat(obj, width=100))
             lines.append('    resp = requests.request("%s", BASE_URL + %s, headers=%s, json=payload, timeout=TIMEOUT)'
@@ -633,7 +654,7 @@ def gen_pytest(sessions, saz_name="", var_by_value=None, setmap=None,
         url_arg = url_e if url_e else repr(path_q)
         if kind == "json":
             obj = _ctxify(val, var_by_value)
-            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id):
+            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id, s["path"]):
                 file_fuzzed = True
             lines.append("    payload = %s" % pformat(obj, width=100))
             lines.append('    resp = api.request("%s", BASE_URL + %s, headers=%s, json=payload, timeout=TIMEOUT)'

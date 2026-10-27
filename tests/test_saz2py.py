@@ -192,6 +192,24 @@ def test_fuzz_does_not_touch_get():
     assert "gen_id()" not in py
 
 
+def test_fuzz_does_not_touch_single_id_reference():
+    """单键 {id:...} 的「确认/提交/删除」类报文是引用已存在记录，
+    不应自动唯一化，否则服务端报「未找到相关节点」。"""
+    s = _sess(1, method="POST", path="/api/business/x/confirm", status=200,
+              resp={"code": 0}, req_ctype="application/json",
+              body=json.dumps({"id": "2114646914210250753"}).encode())
+    py = saz2py.gen_pytest([s], "t.saz")
+    assert "gen_id()" not in py
+    assert "'id': '2114646914210250753'" in py   # 保留原值
+
+
+def test_fuzz_touches_multi_field_create():
+    """POST 多字段「保存/新建」报文里的 id 才是资源自身主键，应唯一化。"""
+    s = _post_save_sess()   # POST .../save，含 id+fkId+name
+    py = saz2py.gen_pytest([s], "t.saz")
+    assert "'id': gen_id()" in py
+
+
 def test_gen_id_unique_across_calls():
     # gen_id 仅存在于生成文件，这里复刻其算法做唯一性校验（与源码保持一致）
     import time, random
