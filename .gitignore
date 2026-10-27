@@ -19,6 +19,7 @@ chk*.txt
 !examples/demo.saz
 test_bhz.py
 test_bsbp.py
+test_ljsl.py
 *_replay.py
 /replay.py
 /test_mock.py

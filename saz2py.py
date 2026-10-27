@@ -10,6 +10,8 @@ saz2py — 把 Fiddler 的 .saz 抓包文件变成可回放的 Python 脚本 / p
     python saz2py.py capture.saz --postman api.json  # 导出 Postman Collection v2.1
     python saz2py.py capture.saz -o replay.py -f order   # 只处理 URL 含 "order" 的会话
     python saz2py.py capture.saz --json sessions.json    # 导出结构化 JSON
+    python saz2py.py capture.saz --pytest -o test_api.py --fuzz-fields projectQuantityName,code
+                                                  # 对 id 自动唯一化，并对指定字段也生成不重复值
 
 仅用标准库；生成的脚本依赖 requests (pip install requests)。
 """
@@ -22,7 +24,7 @@ import sys
 import zipfile
 import zlib
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 from collections import Counter
 from http.client import parse_headers
 from pprint import pformat
@@ -286,6 +288,22 @@ class _CtxRef(object):
         return "ctx.get(%r, %r)" % (self.name, self.value)
 
 
+class _Fuzz(object):
+    """回放时生成不重复值的占位符。
+    kind='id'  -> 渲染成 gen_id()  ，生成 19 位雪花类唯一数字 id
+    kind='str' -> 渲染成 gen_unique('原值')，在原值后追加时间戳，规避名称类唯一键冲突
+    与 _CtxRef 同理，pformat 直接调用 __repr__ 得到可执行的 Python 表达式。"""
+
+    def __init__(self, kind, orig):
+        self.kind = kind
+        self.orig = orig
+
+    def __repr__(self):
+        if self.kind == "id":
+            return "gen_id()"
+        return "gen_unique(%r)" % (self.orig,)
+
+
 def _find_json_path(obj, value, path=()):
     """在解析后的 JSON 里找 value 出现的位置，返回键/下标路径。"""
     if isinstance(obj, dict):
@@ -390,6 +408,62 @@ def _ctxify(obj, var_by_value):
     return obj
 
 
+# ---------------------------------------------------------- 回放唯一化(防重复)
+# 写入型(POST/PUT/PATCH)请求体里，资源自身的 id 通常为自增/雪花主键；
+# 回放若仍用抓包原值，服务端会报「数据库中已存在该记录」。自动改成每次生成新值。
+# 短数字 id(如 economicMinisterHrId='222826')多为外键，保留原值以免破坏关联。
+
+def _need_fuzz(key, value, method, fuzz_keys, auto_id):
+    """判定某个 (键, 值) 是否需要回放时唯一化。"""
+    k = str(key).lower()
+    if auto_id and method in ("POST", "PUT", "PATCH") and k == "id" \
+            and isinstance(value, (str, int)):
+        return True  # 资源自身 id: 自动唯一化
+    if fuzz_keys and k in fuzz_keys and isinstance(value, (str, int, float)):
+        return True  # 用户 --fuzz-fields 指定的额外唯一键
+    return False
+
+
+def _fuzz_payload(val, method, fuzz_keys, auto_id):
+    """递归把 JSON payload 中需唯一化的字段原地替换成 _Fuzz 占位符。
+    返回是否发生了唯一化（用于决定是否向生成文件注入 gen_id/gen_unique 辅助函数）。"""
+    used = [False]
+
+    def _walk(o):
+        if isinstance(o, dict):
+            for k, v in list(o.items()):  # list() 以便原地改
+                if isinstance(v, (dict, list)):
+                    _walk(v)
+                elif _need_fuzz(k, v, method, fuzz_keys, auto_id):
+                    kind = "id" if isinstance(v, (str, int)) and str(v).isdigit() \
+                        else "str"
+                    o[k] = _Fuzz(kind, v if isinstance(v, str) else str(v))
+                    used[0] = True
+        elif isinstance(o, list):
+            for v in o:
+                if isinstance(v, (dict, list)):
+                    _walk(v)
+    _walk(val)
+    return used[0]
+
+
+HELPER_BLOCK = '''\
+# 回放唯一化: 生成不重复值，避免创建类接口因「记录已存在」而失败
+def gen_id():
+    """不重复数字 id（纳秒时间戳 + 4 位随机），规避主键/唯一键冲突；
+    纳秒级足以保证同一次回放内多次调用也不碰撞。"""
+    import time, random
+    return str(time.time_ns()) + str(random.randint(1000, 9999))
+
+
+def gen_unique(base=""):
+    """在原值后追加时间戳，生成不重复字符串，规避名称类唯一键冲突。"""
+    import time, random
+    return "%s_%d%d" % (base, int(time.time() * 1000), random.randint(0, 999))
+'''
+
+
+
 def _py_path_expr(path):
     """JSON 路径 -> Python 表达式: ('data','list',0,'id') -> resp.json()['data']['list'][0]['id']"""
     expr = "resp.json()"
@@ -411,9 +485,11 @@ def _js_path_expr(path):
     return expr
 
 
-def gen_script(sessions, saz_name="", var_by_value=None, setmap=None):
+def gen_script(sessions, saz_name="", var_by_value=None, setmap=None,
+               fuzz_keys=frozenset(), auto_id=True):
     """生成自包含的 requests 回放脚本：改 BASE_URL 即可跑。
-    v0.2: 链式变量 —— 前序接口响应自动提取 id 存入 ctx，后续接口引用 ctx[...]。"""
+    v0.2: 链式变量 —— 前序接口响应自动提取 id 存入 ctx，后续接口引用 ctx[...]。
+    v0.3: 回放唯一化 —— 写入型请求体的 id 自动生成不重复值，防「记录已存在」。"""
     var_by_value = var_by_value or {}
     setmap = setmap or {}
     u0 = urlsplit(sessions[0]["url"]) if sessions else None
@@ -440,7 +516,8 @@ def gen_script(sessions, saz_name="", var_by_value=None, setmap=None):
         "",
         "",
     ]
-    seen, call_names = {}, []
+    ctx_idx = lines.index("ctx = {}")
+    seen, call_names, file_fuzzed = {}, [], False
     for i, s in enumerate(sessions, 1):
         fname = func_name(s, i, seen)
         call_names.append("api_%03d_%s" % (i, fname))
@@ -455,7 +532,10 @@ def gen_script(sessions, saz_name="", var_by_value=None, setmap=None):
         url_e = _url_expr(path_q, var_by_value)
         url_arg = url_e if url_e else repr(path_q)
         if kind == "json":
-            lines.append("    payload = %s" % pformat(_ctxify(val, var_by_value), width=100))
+            obj = _ctxify(val, var_by_value)
+            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id):
+                file_fuzzed = True
+            lines.append("    payload = %s" % pformat(obj, width=100))
             lines.append('    resp = requests.request("%s", BASE_URL + %s, headers=%s, json=payload, timeout=TIMEOUT)'
                          % (s["method"], url_arg, h))
         elif kind in ("form", "text"):
@@ -480,6 +560,10 @@ def gen_script(sessions, saz_name="", var_by_value=None, setmap=None):
         lines.append("    return resp")
         lines.extend(["", ""])
 
+    if file_fuzzed:
+        for off, hl in enumerate(HELPER_BLOCK.splitlines()):
+            lines.insert(ctx_idx + 1 + off, hl)
+
     lines.append('if __name__ == "__main__":')
     for name in call_names:
         lines.append("    %s()" % name)
@@ -488,10 +572,11 @@ def gen_script(sessions, saz_name="", var_by_value=None, setmap=None):
 
 
 def gen_pytest(sessions, saz_name="", var_by_value=None, setmap=None,
-               out_name="test_replay.py"):
+               out_name="test_replay.py", fuzz_keys=frozenset(), auto_id=True):
     """生成 pytest 风格测试文件：test_NNN_ 按抓包顺序执行，
     requests.Session fixture 复用连接并自动携带 Cookie，
-    链式变量放模块级 ctx，自动生成状态码断言。"""
+    链式变量放模块级 ctx，自动生成状态码断言。
+    v0.3: 回放唯一化 —— 写入型请求体的 id 自动生成不重复值，防「记录已存在」。"""
     var_by_value = var_by_value or {}
     setmap = setmap or {}
     u0 = urlsplit(sessions[0]["url"]) if sessions else None
@@ -530,8 +615,9 @@ def gen_pytest(sessions, saz_name="", var_by_value=None, setmap=None,
         "    return s",
         "",
         "",
-    ]
-    seen = {}
+        ]
+    ctx_idx = lines.index("ctx = {}")
+    seen, file_fuzzed = {}, False
     for i, s in enumerate(sessions, 1):
         fname = func_name(s, i, seen)
         tname = "test_%03d_%s" % (i, fname)
@@ -546,7 +632,10 @@ def gen_pytest(sessions, saz_name="", var_by_value=None, setmap=None,
         url_e = _url_expr(path_q, var_by_value)
         url_arg = url_e if url_e else repr(path_q)
         if kind == "json":
-            lines.append("    payload = %s" % pformat(_ctxify(val, var_by_value), width=100))
+            obj = _ctxify(val, var_by_value)
+            if _fuzz_payload(obj, s["method"], fuzz_keys, auto_id):
+                file_fuzzed = True
+            lines.append("    payload = %s" % pformat(obj, width=100))
             lines.append('    resp = api.request("%s", BASE_URL + %s, headers=%s, json=payload, timeout=TIMEOUT)'
                          % (s["method"], url_arg, h))
         elif kind in ("form", "text"):
@@ -582,6 +671,10 @@ def gen_pytest(sessions, saz_name="", var_by_value=None, setmap=None,
             lines.append("    except Exception:")
             lines.append("        print('⚠ 提取变量 %s 失败（响应结构与抓包时不同）')" % name)
         lines.extend(["", ""])
+
+    if file_fuzzed:
+        for off, hl in enumerate(HELPER_BLOCK.splitlines()):
+            lines.insert(ctx_idx + 1 + off, hl)
     return "\n".join(lines) + "\n"
 
 
@@ -691,6 +784,11 @@ def main():
                     help="保留 OPTIONS 预检与静态资源请求(默认过滤)")
     ap.add_argument("--pytest", dest="pytest_style", action="store_true",
                     help="配合 -o 使用: 生成 pytest 测试文件而非普通回放脚本")
+    ap.add_argument("--fuzz-fields", dest="fuzz_fields", default="",
+                    help="额外需要唯一化的字段名(逗号分隔)，如 projectQuantityName,code；"
+                         "回放时自动生成不重复值，规避名称类唯一键冲突")
+    ap.add_argument("--no-unique", dest="no_unique", action="store_true",
+                    help="关闭自动唯一化(默认会对写入型请求体的 id 生成新值)")
     args = ap.parse_args()
 
     try:
@@ -733,15 +831,25 @@ def main():
     if n_assert:
         print("✓ 将为 %d 个接口自动生成业务断言（code/success/data 结构）" % n_assert)
 
+    fuzz_keys = {k.strip().lower() for k in args.fuzz_fields.split(",") if k.strip()}
+    auto_id = not args.no_unique
+    if auto_id or fuzz_keys:
+        msg = "✓ 回放唯一化已开启: 写入型请求体的 id 自动生成新值"
+        if fuzz_keys:
+            msg += "；额外唯一化字段: " + ", ".join(sorted(fuzz_keys))
+        print(msg)
+
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             if args.pytest_style:
                 f.write(gen_pytest(sessions, args.saz, var_by_value, setmap,
-                                   out_name=args.out.split("/")[-1].split("\\")[-1]))
+                                   out_name=args.out.split("/")[-1].split("\\")[-1],
+                                   fuzz_keys=fuzz_keys, auto_id=auto_id))
                 print("\n✓ pytest 测试文件已生成: %s  (运行: pytest %s -v)"
                       % (args.out, args.out.split("/")[-1].split("\\")[-1]))
             else:
-                f.write(gen_script(sessions, args.saz, var_by_value, setmap))
+                f.write(gen_script(sessions, args.saz, var_by_value, setmap,
+                                   fuzz_keys=fuzz_keys, auto_id=auto_id))
                 print("\n✓ 回放脚本已生成: %s" % args.out)
     if args.postman:
         with open(args.postman, "w", encoding="utf-8") as f:

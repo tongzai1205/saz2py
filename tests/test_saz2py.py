@@ -142,6 +142,66 @@ def test_chain_rendered_in_outputs():
     assert any(it.get("event") for it in pm["item"])  # 生产者挂了提取脚本
 
 
+# ------------------------------------------------------------------ 回放唯一化
+
+def _post_save_sess():
+    """模拟一个写入型创建请求: 自身 id(雪花) + 外键短 id + 名称。"""
+    return _sess(
+        1, method="POST", path="/api/business/x/save", status=200,
+        resp={"code": 0, "data": None}, req_ctype="application/json",
+        body=json.dumps({
+            "id": "2114646914210250753",   # 资源自身主键(长数字)
+            "fkId": "222826",              # 外键(短数字，应保留)
+            "name": "测试 11",             # 名称类字段
+        }).encode())
+
+
+def test_fuzz_id_only_by_default():
+    """默认只对写入型请求体的 id 唯一化，外键与名称保持不变。"""
+    s = _post_save_sess()
+    py = saz2py.gen_pytest([s], "t.saz")
+    assert "'id': gen_id()" in py
+    assert "fkId': '222826'" in py          # 外键保留原值
+    assert "'name': '测试 11'" in py         # 名称未动（除非 --fuzz-fields）
+    assert "def gen_id():" in py
+    assert "def gen_unique(" in py            # 辅助函数一并注入（即使未用到）
+    compile(py, "gen.py", "exec")
+
+
+def test_fuzz_id_disabled_with_no_unique():
+    """--no-unique 应关闭唯一化，保留原始 id 字面值。"""
+    s = _post_save_sess()
+    py = saz2py.gen_pytest([s], "t.saz", auto_id=False)
+    assert "gen_id()" not in py
+    assert "'id': '2114646914210250753'" in py
+
+
+def test_fuzz_fields_adds_unique_suffix():
+    """--fuzz-fields name 应对该字段生成 gen_unique(原值)，追加时间戳。"""
+    s = _post_save_sess()
+    py = saz2py.gen_pytest([s], "t.saz", fuzz_keys={"name"}, auto_id=True)
+    assert "gen_unique('测试 11')" in py
+    assert "'id': gen_id()" in py            # id 仍自动唯一化
+
+
+def test_fuzz_does_not_touch_get():
+    """GET 请求体里的 id 不应被唯一化(避免把查询参数变成随机值)。"""
+    s = _sess(1, path="/api/x", query="id=2114646914210250753",
+              resp={"code": 0})
+    py = saz2py.gen_pytest([s], "t.saz")
+    assert "gen_id()" not in py
+
+
+def test_gen_id_unique_across_calls():
+    # gen_id 仅存在于生成文件，这里复刻其算法做唯一性校验（与源码保持一致）
+    import time, random
+    seen = set()
+    for _ in range(1000):
+        v = str(time.time_ns()) + str(random.randint(1000, 9999))
+        assert v not in seen
+        seen.add(v)
+
+
 # ------------------------------------------------------------------ 生成产物
 
 def test_gen_script_compiles():
