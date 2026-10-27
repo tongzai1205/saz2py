@@ -9,7 +9,9 @@ on:
 jobs:
   test:
     name: test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # ubuntu-latest 已迁移到 Ubuntu 26.04（2026-10 起），其上无 Python 3.9 构建版；
+    # 3.9 固定到仍提供该版本的 ubuntu-24.04
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
